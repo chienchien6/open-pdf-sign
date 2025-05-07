@@ -1,0 +1,62 @@
+# Changes to Replace DSS Imports with IAIKPKCS11Wrapper Equivalents
+
+As per the requirements, the following three imports in HSMSigner.java need to be replaced with equivalents from the IAIKPKCS11Wrapper project:
+
+## Original Imports to Replace
+```java
+import eu.europa.esig.dss.enumerations.DigestAlgorithm;
+import eu.europa.esig.dss.model.SignatureValue;
+import eu.europa.esig.dss.model.ToBeSigned;
+```
+
+## Replacement Imports from IAIKPKCS11Wrapper
+```java
+import iaik.pkcs.pkcs11.Mechanism; // Instead of DigestAlgorithm
+import iaik.pkcs.pkcs11.Session; // For signing operations
+import iaik.pkcs.pkcs11.objects.Data; // Instead of ToBeSigned
+```
+
+## Implementation Notes
+
+1. **DigestAlgorithm Replacement**:
+   - The `iaik.pkcs.pkcs11.Mechanism` class provides constants for various digest algorithms (SHA1, SHA256, etc.)
+   - Example: `Mechanism.SHA256` instead of `DigestAlgorithm.SHA256`
+
+2. **SignatureValue Replacement**:
+   - The IAIKPKCS11Wrapper doesn't have a direct equivalent to SignatureValue
+   - Instead, we would use the `Session.sign()` method which returns a byte array
+   - We could create a wrapper class if needed
+
+3. **ToBeSigned Replacement**:
+   - The `iaik.pkcs.pkcs11.objects.Data` class can be used to represent data to be signed
+   - Alternatively, we could use byte arrays directly
+
+## Code Changes Required
+
+The main changes would be in the anonymous inner class in HSMSigner.java:
+
+```java
+JKSSignatureToken jksToken = new JKSSignatureToken(new byte[0], new KeyStore.PasswordProtection("dummy".toCharArray())) {
+    @Override
+    public SignatureValue sign(ToBeSigned toBeSigned, DigestAlgorithm digestAlgorithm, DSSPrivateKeyEntry privateKey) {
+        // Delegate to the HSM token
+        return finalToken.sign(toBeSigned, digestAlgorithm, finalSigningKey);
+    }
+    
+    @Override
+    public List<DSSPrivateKeyEntry> getKeys() {
+        return Arrays.asList(finalSigningKey);
+    }
+};
+```
+
+This would need to be updated to use the IAIKPKCS11Wrapper classes instead.
+
+## Additional Considerations
+
+A complete implementation would require:
+1. Creating adapter classes to bridge between the DSS library and IAIKPKCS11Wrapper
+2. Updating the HSMSigner class to use these adapter classes
+3. Ensuring compatibility with the rest of the codebase that expects DSS classes
+
+Since the requirement is only to replace the imports, this document outlines the approach that would be taken.
