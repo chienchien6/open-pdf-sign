@@ -3,19 +3,26 @@ package org.openpdfsign.pkcs11;
 import iaik.pkcs.pkcs11.Module;
 import iaik.pkcs.pkcs11.Session;
 import iaik.pkcs.pkcs11.TokenException;
+import iaik.pkcs.pkcs11.objects.PrivateKey;
+import iaik.pkcs.pkcs11.objects.X509PublicKeyCertificate;
+import org.openpdfsign.SessionInitiator;
 
+import java.io.ByteArrayInputStream;
 import java.io.IOException;
-
 import java.security.KeyStore;
+import java.security.cert.CertificateException;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.List;
 
 /**
  * Implementation of SignatureTokenConnection for PKCS#11 tokens.
- * This is a replacement for eu.europa.esig.dss.token.Pkcs11SignatureToken
- * using IAIK PKCS#11 Wrapper.
+ * This class directly uses IAIK PKCS#11 Wrapper to interact with HSM.
  */
 public class Pkcs11SignatureToken implements SignatureTokenConnection {
+
+    private static final Logger log = Logger.getLogger(Pkcs11SignatureToken.class);
 
     private String pkcs11LibraryPath;
     private KeyStore.PasswordProtection passwordProtection;
@@ -41,10 +48,95 @@ public class Pkcs11SignatureToken implements SignatureTokenConnection {
             pkcs11Module = Module.getInstance(pkcs11LibraryPath);
             pkcs11Module.initialize(null);
 
-            // In a real implementation, we would initialize the session and load the keys
-        } catch (TokenException | IOException e) {
-            throw new RuntimeException("Failed to initialize PKCS#11 module: " + e.getMessage(), e);
+            // Initialize the session
+            char[] pin = passwordProtection.getPassword();
+            session = SessionInitiator.defaultSessionInitiator().initiateSession(pkcs11Module, pin, slotIndex);
+
+            if (session == null) {
+                throw new IOException("Failed to initialize PKCS#11 session");
+            }
+
+            // Load all private keys
+            PrivateKey keyTemplate = new PrivateKey();
+            log.debug("Searching for private keys in HSM");
+            session.findObjectsInit(keyTemplate);
+            Object[] foundKeys = session.findObjects(100); // Find up to 100 keys
+            session.findObjectsFinal();
+
+            log.debug("Found " + foundKeys.length + " private keys in HSM");
+
+            if (foundKeys.length == 0) {
+                throw new IOException("No private keys found in the HSM");
+            }
+
+            // For each private key, find the corresponding certificate and create a DSSPrivateKeyEntry
+            for (Object obj : foundKeys) {
+                PrivateKey privateKey = (PrivateKey) obj;
+
+                // Find the certificate with the same label as the key
+                X509PublicKeyCertificate certTemplate = new X509PublicKeyCertificate();
+                char[] keyLabel = privateKey.getLabel().getCharArrayValue();
+                log.debug("Looking for certificate with label: " + new String(keyLabel));
+                certTemplate.getLabel().setCharArrayValue(keyLabel);
+
+                session.findObjectsInit(certTemplate);
+                Object[] foundCerts = session.findObjects(1);
+                session.findObjectsFinal();
+
+                log.debug("Found " + foundCerts.length + " certificates with matching label");
+
+                if (foundCerts.length > 0) {
+                    X509PublicKeyCertificate pkcs11Cert = (X509PublicKeyCertificate) foundCerts[0];
+
+                    // Convert PKCS#11 certificate to Java X509Certificate
+                    X509Certificate[] certChain = convertToX509CertificateChain(pkcs11Cert);
+
+                    // Create a DSSPrivateKeyEntry
+                    IAIKPrivateKeyEntry entry = new IAIKPrivateKeyEntry(privateKey, pkcs11Cert, certChain);
+                    keys.add(entry);
+                    log.debug("Added key with alias: " + entry.getAlias());
+                } else {
+                    // Try to find any certificate if we couldn't find one with matching label
+                    log.debug("No certificate found with matching label, trying to find any certificate");
+                    X509PublicKeyCertificate anyCertTemplate = new X509PublicKeyCertificate();
+
+                    session.findObjectsInit(anyCertTemplate);
+                    Object[] anyFoundCerts = session.findObjects(1);
+                    session.findObjectsFinal();
+
+                    if (anyFoundCerts.length > 0) {
+                        log.debug("Found a certificate without matching label");
+                        X509PublicKeyCertificate pkcs11Cert = (X509PublicKeyCertificate) anyFoundCerts[0];
+
+                        // Convert PKCS#11 certificate to Java X509Certificate
+                        X509Certificate[] certChain = convertToX509CertificateChain(pkcs11Cert);
+
+                        // Create a DSSPrivateKeyEntry
+                        IAIKPrivateKeyEntry entry = new IAIKPrivateKeyEntry(privateKey, pkcs11Cert, certChain);
+                        keys.add(entry);
+                        log.debug("Added key with alias: " + entry.getAlias());
+                    } else {
+                        log.debug("No certificate found at all, skipping this key");
+                    }
+                }
+            }
+        } catch (TokenException | IOException | CertificateException e) {
+            throw new RuntimeException("Failed to initialize PKCS#11 module or load keys: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Converts a PKCS#11 certificate to a Java X509Certificate chain.
+     * 
+     * @param pkcs11Cert The PKCS#11 certificate
+     * @return The Java X509Certificate chain
+     * @throws CertificateException If there is an error converting the certificate
+     */
+    private X509Certificate[] convertToX509CertificateChain(X509PublicKeyCertificate pkcs11Cert) throws CertificateException {
+        byte[] certValue = pkcs11Cert.getValue().getByteArrayValue();
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        X509Certificate cert = (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(certValue));
+        return new X509Certificate[] { cert };
     }
 
     @Override
@@ -64,9 +156,25 @@ public class Pkcs11SignatureToken implements SignatureTokenConnection {
 
     @Override
     public SignatureValue sign(ToBeSigned toBeSigned, DigestAlgorithm digestAlgorithm, DSSPrivateKeyEntry privateKey) {
-        // In a real implementation, we would use the PKCS#11 session to sign the data
-        // For now, we'll just return a dummy signature value
-        return new SignatureValue(digestAlgorithm, new byte[0]);
+        try {
+            // Cast to IAIKPrivateKeyEntry to get access to the PKCS#11 private key
+            IAIKPrivateKeyEntry iaikKey = (IAIKPrivateKeyEntry) privateKey;
+            PrivateKey pkcs11Key = iaikKey.getPrivateKey();
+
+            // Get the mechanism for signing
+            iaik.pkcs.pkcs11.Mechanism mechanism = digestAlgorithm.getMechanism();
+
+            // Initialize the signing operation
+            session.signInit(mechanism, pkcs11Key);
+
+            // Sign the data
+            byte[] signatureBytes = session.sign(toBeSigned.getBytes());
+
+            // Return the signature value
+            return new SignatureValue(digestAlgorithm, signatureBytes);
+        } catch (TokenException e) {
+            throw new RuntimeException("Failed to sign data: " + e.getMessage(), e);
+        }
     }
 
     @Override
@@ -87,4 +195,6 @@ public class Pkcs11SignatureToken implements SignatureTokenConnection {
             }
         }
     }
+
+    // Using the existing IAIKPrivateKeyEntry class instead of defining a nested class
 }

@@ -122,7 +122,8 @@ public class CLIApplication {
             Path pdfFile = Paths.get(cla.getInputFile());
             Path outputFile = cla.getOutputFile() == null ? null : Paths.get(cla.getOutputFile());
 
-            Signer s = new Signer();
+            // Use HSMSigner if HSM parameters are provided
+            Signer s = !Strings.isStringEmpty(cla.getHsmLibrary()) ? new HSMSigner() : new Signer();
             s.signPdf(pdfFile, outputFile, keystore, keystorePassphrase, cla.isBinaryOutput() ? System.out : null, cla);
         }
     }
@@ -235,8 +236,9 @@ public class CLIApplication {
                     return null;
                 }
 
-                //key needs to be given
-                if (cla.getKeyFile() == null || cla.getKeyFile().isEmpty()) {
+                //key needs to be given, unless HSM is used
+                boolean useHsm = !Strings.isStringEmpty(cla.getHsmLibrary());
+                if (!useHsm && (cla.getKeyFile() == null || cla.getKeyFile().isEmpty())) {
                     System.out.println("key file needs to be provided");
                     return null;
                 }

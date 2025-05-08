@@ -24,6 +24,10 @@ import java.util.List;
 /**
  * Extension of the Signer class that adds support for HSM (Hardware Security Module) signing
  * using PKCS#11 interface.
+ * 
+ * This implementation uses a PKCS#11 token for signing operations, but creates a JKS token wrapper
+ * to make it compatible with the parent Signer class which expects a JKSSignatureToken.
+ * The JKS token wrapper delegates the actual signing operation to the PKCS#11 token.
  */
 public class HSMSigner extends Signer {
 
@@ -74,26 +78,40 @@ public class HSMSigner extends Signer {
 
             try {
                 // Initialize PKCS11 token with the provided library path
-                token = new Pkcs11SignatureToken(params.getHsmLibrary(), 
-                                                new KeyStore.PasswordProtection(params.getHsmPin().toCharArray()), 
-                                                params.getHsmSlot());
+                log.debug("Initializing HSM token with library: " + params.getHsmLibrary());
+                log.debug("Using HSM slot: " + params.getHsmSlot());
 
-                log.debug("HSM token initialized");
+                try {
+                    token = new Pkcs11SignatureToken(params.getHsmLibrary(), 
+                                                    new KeyStore.PasswordProtection(params.getHsmPin().toCharArray()), 
+                                                    params.getHsmSlot());
+
+                    if (token == null) {
+                        throw new IOException("Failed to initialize HSM token");
+                    }
+                    log.debug("HSM token initialized successfully");
+                } catch (RuntimeException e) {
+                    log.error("Error initializing HSM token", e);
+                    throw new IOException("Failed to initialize HSM token: " + e.getMessage(), e);
+                }
+
 
                 // Get the list of keys from the token
+                log.debug("Attempting to get keys from HSM token");
                 List<DSSPrivateKeyEntry> keys = token.getKeys();
 
                 if (keys.isEmpty()) {
                     throw new IOException("No keys found in the HSM");
                 }
 
+                log.debug("Retrieved " + (keys != null ? keys.size() : 0) + " keys from HSM");
                 // Use the specified key alias or the first key if no alias is specified
                 DSSPrivateKeyEntry signingKey = null;
 
                 if (!Strings.isStringEmpty(params.getHsmKeyAlias())) {
                     // Find the key with the specified alias
                     for (DSSPrivateKeyEntry key : keys) {
-                        if (params.getHsmKeyAlias().equals(key.getCertificate())) {
+                        if (params.getHsmKeyAlias().equals(key.getAlias())) {
                             signingKey = key;
                             break;
                         }
@@ -107,24 +125,28 @@ public class HSMSigner extends Signer {
                     signingKey = keys.get(0);
                 }
 
-                log.debug("Using key with alias: " + signingKey.getCertificate());
+                log.debug("Using key with alias: " + signingKey.getAlias());
 
                 // Create a temporary JKS token with the certificate from the HSM
-                // This is needed because the signPdf method expects a JKSSignatureToken
-                // We'll override the signing operation to use the HSM token
+                // This is needed because the parent Signer.signPdf method expects a JKSSignatureToken
+                // from the EU DSS library. We can't modify the parent class to accept our custom
+                // PKCS#11 token directly, so we create a JKS token wrapper that delegates to the PKCS#11 token.
                 final DSSPrivateKeyEntry finalSigningKey = signingKey;
                 final SignatureTokenConnection finalToken = token;
 
-                // Create a custom token that delegates signing to the HSM token
+                // Create a custom JKSSignatureToken that delegates signing to the HSM token
+                // This is a key part of the design that allows us to use the HSM without modifying the parent class
                 JKSSignatureToken jksToken = new JKSSignatureToken(new byte[0], new KeyStore.PasswordProtection("dummy".toCharArray())) {
                     @Override
                     public SignatureValue sign(ToBeSigned toBeSigned, DigestAlgorithm digestAlgorithm, DSSPrivateKeyEntry privateKey) {
-                        // Delegate to the HSM token
+                        // Delegate the actual signing operation to the PKCS#11 token
+                        // This is where we avoid using JKS as an intermediate layer for the signing operation
                         return finalToken.sign(toBeSigned, digestAlgorithm, finalSigningKey);
                     }
 
                     @Override
                     public List<DSSPrivateKeyEntry> getKeys() {
+                        // Return the HSM key as the only key in this token
                         return Arrays.asList(finalSigningKey);
                     }
                 };

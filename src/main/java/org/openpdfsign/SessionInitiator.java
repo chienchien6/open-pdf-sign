@@ -38,20 +38,54 @@ public class SessionInitiator {
         if (slotsWithTokens == null) {
             try {
                 slotsWithTokens = pkcs11Module.getSlotList(Module.SlotRequirement.TOKEN_PRESENT);
+                System.out.println("Found " + slotsWithTokens.length + " slots with tokens");
+                for (int i = 0; i < slotsWithTokens.length; i++) {
+                    System.out.println("Slot " + i + ": " + slotsWithTokens[i].getSlotID());
+                }
             } catch (TokenException e) {
-                System.out.println("Session initiation error : " + e.getMessage());
+                System.out.println("Session initiation error when getting slot list: " + e.getMessage());
+                e.printStackTrace();
+                return null;
             }
         }
-        if (slotsWithTokens.length > slotNo) {
-            Slot slot = slotsWithTokens[slotNo];
+        
+        if (slotsWithTokens.length == 0) {
+            System.out.println("No slots with tokens found");
+            return null;
+        }
+        
+        if (slotNo >= slotsWithTokens.length) {
+            System.out.println("Requested slot number " + slotNo + " is out of range. Only " + slotsWithTokens.length + " slots available.");
+            return null;
+        }
+        
+        Slot slot = slotsWithTokens[slotNo];
+        System.out.println("Using slot " + slotNo + " with ID: " + slot.getSlotID());
+        
+        try {
+            Token token = slot.getToken();
             try {
-                Token token = slot.getToken();
-                session = token.openSession(Token.SessionType.SERIAL_SESSION,
-                        Token.SessionReadWriteBehavior.RW_SESSION, null, null);
-                session.login(Session.UserType.USER, userPin);
-            } catch (TokenException e) {
-                System.out.println("Session initiation error : " + e.getMessage());
+                TokenInfo tokenInfo = token.getTokenInfo();
+                System.out.println("Token label: " + new String(tokenInfo.getLabel()).trim());
+                System.out.println("Token Manufacturer ID: " + new String(tokenInfo.getManufacturerID()).trim());
+                System.out.println("Token Model: " + new String(tokenInfo.getModel()).trim());
+                System.out.println("Token Serial Number: " + new String(tokenInfo.getSerialNumber()).trim());
+            } catch (TokenException te) {
+                System.out.println("Error getting token info: " + te.getMessage());
+                te.printStackTrace();
+                // Optionally, rethrow or handle as critical error if token info is essential
             }
+            
+            session = token.openSession(Token.SessionType.SERIAL_SESSION,
+                    Token.SessionReadWriteBehavior.RW_SESSION, null, null);
+            System.out.println("Session opened successfully");
+            
+            session.login(Session.UserType.USER, userPin);
+            System.out.println("Logged in successfully");
+        } catch (TokenException e) {
+            System.out.println("Session initiation error: " + e.getMessage());
+            e.printStackTrace();
+            return null;
         }
         return session;
     }
