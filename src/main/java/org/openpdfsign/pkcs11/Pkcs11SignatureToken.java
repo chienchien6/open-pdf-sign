@@ -162,10 +162,44 @@ public class Pkcs11SignatureToken implements SignatureTokenConnection {
             PrivateKey pkcs11Key = iaikKey.getPrivateKey();
 
             // Get the mechanism for signing
-            iaik.pkcs.pkcs11.Mechanism mechanism = digestAlgorithm.getMechanism();
+            iaik.pkcs.pkcs11.Mechanism signatureMechanism;
+            String keyAlgo = iaikKey.getEncryptionAlgorithm().toUpperCase();
+
+            if (keyAlgo.contains("EC") || keyAlgo.contains("ECDSA")) {
+                // For ECDSA, the mechanism is just CKM_ECDSA. The hash is implied by the data to be signed.
+                // Or, some HSMs might expect a combined mechanism if the library supports it directly.
+                // We'll use CKM_ECDSA as it's more standard for raw ECDSA signing.
+                // The actual hash (SHA1, SHA256, etc.) is part of the data to be signed, not the mechanism itself for CKM_ECDSA.
+                signatureMechanism = iaik.pkcs.pkcs11.Mechanism.get(iaik.pkcs.pkcs11.wrapper.PKCS11Constants.CKM_ECDSA);
+                log.debug("Using ECDSA mechanism: CKM_ECDSA");
+            } else if (keyAlgo.contains("RSA")) {
+                // For RSA, we combine the digest algorithm with RSA_PKCS
+                // This is a common way to specify RSA with a specific hash
+                if (digestAlgorithm == DigestAlgorithm.SHA1) {
+                    signatureMechanism = iaik.pkcs.pkcs11.Mechanism.get(iaik.pkcs.pkcs11.wrapper.PKCS11Constants.CKM_SHA1_RSA_PKCS);
+                    log.debug("Using RSA mechanism: CKM_SHA1_RSA_PKCS");
+                } else if (digestAlgorithm == DigestAlgorithm.SHA256) {
+                    signatureMechanism = iaik.pkcs.pkcs11.Mechanism.get(iaik.pkcs.pkcs11.wrapper.PKCS11Constants.CKM_SHA256_RSA_PKCS);
+                    log.debug("Using RSA mechanism: CKM_SHA256_RSA_PKCS");
+                } else if (digestAlgorithm == DigestAlgorithm.SHA384) {
+                    signatureMechanism = iaik.pkcs.pkcs11.Mechanism.get(iaik.pkcs.pkcs11.wrapper.PKCS11Constants.CKM_SHA384_RSA_PKCS);
+                    log.debug("Using RSA mechanism: CKM_SHA384_RSA_PKCS");
+                } else if (digestAlgorithm == DigestAlgorithm.SHA512) {
+                    signatureMechanism = iaik.pkcs.pkcs11.Mechanism.get(iaik.pkcs.pkcs11.wrapper.PKCS11Constants.CKM_SHA512_RSA_PKCS);
+                    log.debug("Using RSA mechanism: CKM_SHA512_RSA_PKCS");
+                } else {
+                    // Fallback to generic RSA_PKCS if digest algorithm is not specifically handled
+                    // This might not always work, depending on the HSM's expectations
+                    signatureMechanism = iaik.pkcs.pkcs11.Mechanism.get(iaik.pkcs.pkcs11.wrapper.PKCS11Constants.CKM_RSA_PKCS);
+                    log.warn("Using generic RSA_PKCS mechanism due to unhandled digest algorithm: " + digestAlgorithm.getName());
+                }
+            } else {
+                log.error("Unsupported key algorithm for PKCS#11 signing: " + keyAlgo);
+                throw new RuntimeException("Unsupported key algorithm for PKCS#11 signing: " + keyAlgo);
+            }
 
             // Initialize the signing operation
-            session.signInit(mechanism, pkcs11Key);
+            session.signInit(signatureMechanism, pkcs11Key);
 
             // Sign the data
             byte[] signatureBytes = session.sign(toBeSigned.getBytes());

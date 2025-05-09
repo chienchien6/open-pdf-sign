@@ -85,10 +85,10 @@ public class Signer {
         if (params.getUseLT()) {
             //extra signature space for the use of a timestamped signature
             signatureParameters.setSignatureLevel(SignatureLevel.PAdES_BASELINE_LT);
-            signatureParameters.setContentSize((int) (SignatureOptions.DEFAULT_SIGNATURE_SIZE * 1.5));
+            signatureParameters.setContentSize((int) (SignatureOptions.DEFAULT_SIGNATURE_SIZE * 2.5)); // Increased from 1.5 to 2.5
         } else if (params.getUseLTA()) {
             signatureParameters.setSignatureLevel(SignatureLevel.PAdES_BASELINE_LTA);
-            signatureParameters.setContentSize((int) (SignatureOptions.DEFAULT_SIGNATURE_SIZE * 1.75));
+            signatureParameters.setContentSize((int) (SignatureOptions.DEFAULT_SIGNATURE_SIZE * 3.0)); // Increased from 1.75 to 3.0
         } else if (params.getUseTimestamp() || !params.getTSA().isEmpty()) {
             signatureParameters.setSignatureLevel(SignatureLevel.PAdES_BASELINE_T);
             signatureParameters.setContentSize((int) (SignatureOptions.DEFAULT_SIGNATURE_SIZE * 1.5));
@@ -292,7 +292,7 @@ public class Signer {
         return new OnlineTSPSource(source, timestampDataLoader);
     }
 
-    private ProxyConfig retrieveProxyConfig() {
+    ProxyConfig retrieveProxyConfig() {
         ProxyConfig proxyConfig = new ProxyConfig();
 
         String httpProxyHost = System.getProperty(HTTP_PROXY_HOST);
